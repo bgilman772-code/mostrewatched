@@ -1,0 +1,6 @@
+# Local config, queue database, and rendered cards — not checked in.
+config.json
+dcnews.db
+dcnews.db-journal
+cards/
+__pycache__/

@@ -1,0 +1,36 @@
+{
+  "store": "dcnews.db",
+  "cards_dir": "cards",
+  "card_base_url": "",
+  "handle": "@mostrewatched",
+  "request_timeout": 20.0,
+
+  "feeds": [
+    {"name": "WTOP", "url": "https://wtop.com/feed/"},
+    {"name": "PoPville", "url": "https://www.popville.com/feed/"},
+    {"name": "Washington City Paper", "url": "https://washingtoncitypaper.com/feed/"},
+    {"name": "The DC Line", "url": "https://thedcline.org/feed/"},
+    {"name": "Hill Rag", "url": "https://www.hillrag.com/feed/"},
+    {"name": "NBC4 Washington", "url": "https://www.nbcwashington.com/?rss=y"},
+    {"name": "WUSA9 Local", "url": "https://www.wusa9.com/feeds/syndication/rss/news/local"},
+    {"name": "Axios DC", "url": "https://www.axios.com/local/washington-dc/feed"}
+  ],
+
+  "relevance": {
+    "navy_yard_threshold": 8,
+    "dc_threshold": 6,
+    "extra_core": {},
+    "exclude": []
+  },
+
+  "publish": {
+    "auto": false,
+    "auto_approve_navy_yard": false,
+    "max_per_day": 6,
+    "hashtags": ["#CapitolHill", "#DCLocal", "#Ward6"],
+    "ig_user_id_env": "IG_USER_ID",
+    "access_token_env": "IG_ACCESS_TOKEN",
+    "api_base": "https://graph.facebook.com",
+    "api_version": "v21.0"
+  }
+}
