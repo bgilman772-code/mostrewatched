@@ -23,12 +23,21 @@ CREATE TABLE IF NOT EXISTS items (
     matched      TEXT,
     status       TEXT NOT NULL DEFAULT 'pending',
     card_path    TEXT,
-    ig_media_id  TEXT,
+    exported_at  TEXT,
     permalink    TEXT,
     error        TEXT,
     updated      TEXT
 );
 CREATE INDEX IF NOT EXISTS items_status ON items(status, score DESC);
+CREATE TABLE IF NOT EXISTS results (
+    item_id   TEXT NOT NULL,
+    target    TEXT NOT NULL,
+    status    TEXT NOT NULL,
+    permalink TEXT,
+    error     TEXT,
+    recorded  TEXT NOT NULL,
+    PRIMARY KEY (item_id, target)
+);
 CREATE TABLE IF NOT EXISTS feed_state (
     url           TEXT PRIMARY KEY,
     etag          TEXT,
@@ -41,7 +50,12 @@ CREATE TABLE IF NOT EXISTS feed_state (
 # Tracking params that change the URL without changing the article.
 TRACKING_PREFIXES = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "ref_", "__twitter")
 
-STATUSES = ("pending", "approved", "rejected", "posted", "failed")
+# pending -> approved -> exported -> posted, or rejected / failed anywhere along.
+# "exported" means handed to the posting pipeline; "posted" is that pipeline
+# reporting back, via `mark-posted`.
+STATUSES = ("pending", "approved", "rejected", "exported", "posted", "failed")
+
+TARGETS = ("instagram", "tiktok")
 
 
 def now_iso() -> str:
@@ -83,7 +97,6 @@ class Item:
     id: str = ""
     status: str = "pending"
     card_path: str | None = None
-    ig_media_id: str | None = None
     permalink: str | None = None
     error: str | None = None
 
@@ -145,7 +158,7 @@ class Store:
         cols = ["status = ?", "updated = ?"]
         args: list = [status, now_iso()]
         for key, value in fields.items():
-            if key not in {"card_path", "ig_media_id", "permalink", "error"}:
+            if key not in {"card_path", "exported_at", "permalink", "error"}:
                 raise ValueError(f"cannot set unknown column {key!r}")
             cols.append(f"{key} = ?")
             args.append(value)
@@ -162,6 +175,46 @@ class Store:
             "SELECT COUNT(*) n FROM items WHERE status = 'posted' AND updated >= ?", (iso_ts,)
         ).fetchone()
         return row["n"]
+
+    def exported_since(self, iso_ts: str) -> int:
+        """Items handed to the posting pipeline since a timestamp."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) n FROM items WHERE exported_at IS NOT NULL AND exported_at >= ?",
+            (iso_ts,),
+        ).fetchone()
+        return row["n"]
+
+    # -- per-target results reported back by the posting pipeline ---------- #
+
+    def record_result(
+        self, item_id_: str, target: str, status: str, permalink: str = "", error: str = ""
+    ) -> None:
+        if target not in TARGETS:
+            raise ValueError(f"unknown target {target!r}; expected one of {', '.join(TARGETS)}")
+        self.conn.execute(
+            """INSERT INTO results (item_id, target, status, permalink, error, recorded)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(item_id, target) DO UPDATE SET
+                 status=excluded.status, permalink=excluded.permalink,
+                 error=excluded.error, recorded=excluded.recorded""",
+            (item_id_, target, status, permalink, error, now_iso()),
+        )
+        # The item counts as posted once any target has taken it.
+        row = self.conn.execute(
+            "SELECT COUNT(*) n FROM results WHERE item_id = ? AND status = 'posted'", (item_id_,)
+        ).fetchone()
+        if row["n"]:
+            first = self.conn.execute(
+                "SELECT permalink FROM results WHERE item_id = ? AND status = 'posted' AND permalink != '' LIMIT 1",
+                (item_id_,),
+            ).fetchone()
+            self.set_status(item_id_, "posted", permalink=first["permalink"] if first else None)
+        else:
+            self.set_status(item_id_, "failed", error=error or "posting pipeline reported failure")
+        self.conn.commit()
+
+    def results_for(self, item_id_: str) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM results WHERE item_id = ?", (item_id_,)))
 
     # -- feed conditional-GET state ---------------------------------------- #
 

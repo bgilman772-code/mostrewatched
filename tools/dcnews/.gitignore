@@ -4,3 +4,5 @@ dcnews.db
 dcnews.db-journal
 cards/
 __pycache__/
+manifest.json
+manifest.jsonl

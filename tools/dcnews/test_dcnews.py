@@ -3,8 +3,8 @@
 
     python3 test_dcnews.py
 
-Network tests use a mock Graph API on localhost; nothing reaches Instagram.
-The rendering test is skipped when no Chrome/Chromium is installed.
+Nothing here touches the network. The rendering test is skipped when no
+Chrome/Chromium is installed.
 """
 
 from __future__ import annotations
@@ -14,19 +14,16 @@ import os
 import struct
 import sys
 import tempfile
-import threading
-import time
 import unittest
 import zlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import captions
 import feeds
-import instagram
 import pngtools
 import relevance
+import dcnews
 import render
 from store import Item, Store, canonical_url
 
@@ -100,8 +97,8 @@ class TestStore(unittest.TestCase):
         row = self.store.get(item.id)
         self.assertEqual(row["status"], "approved")
         self.assertEqual(row["card_path"], "/tmp/a.png")
-        self.store.set_status(item.id, "posted", ig_media_id="M1")
-        self.assertEqual(self.store.counts(), {"posted": 1})
+        self.store.set_status(item.id, "exported", exported_at="2026-08-30T12:00:00+00:00")
+        self.assertEqual(self.store.counts(), {"exported": 1})
 
     def test_rejects_unknown_status_and_column(self):
         item = Item(source="A", title="t", url="https://example.org/z")
@@ -284,103 +281,133 @@ class TestRender(unittest.TestCase):
                             "bottom of the card should be painted, not clipped")
 
 
-class MockGraphHandler(BaseHTTPRequestHandler):
-    polls = 0
 
-    def log_message(self, *args):
-        pass
-
-    def _send(self, code, obj):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
-        body = parse_qs(self.rfile.read(length).decode())
-        if path.endswith("/media"):
-            if not body.get("image_url"):
-                return self._send(400, {"error": {"code": 100, "message": "image_url required"}})
-            return self._send(200, {"id": "CONTAINER123"})
-        if path.endswith("/media_publish"):
-            return self._send(200, {"id": "MEDIA456"})
-        self._send(404, {"error": {"message": "no route"}})
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-        if path.endswith("/CONTAINER123"):
-            MockGraphHandler.polls += 1
-            return self._send(200, {"status_code": "FINISHED" if MockGraphHandler.polls >= 2 else "IN_PROGRESS"})
-        if path.endswith("/MEDIA456"):
-            return self._send(200, {"permalink": "https://www.instagram.com/p/ABC/"})
-        if path.endswith("/content_publishing_limit"):
-            return self._send(200, {"data": [{"quota_usage": 3, "config": {"quota_total": 25}}]})
-        self._send(404, {"error": {"message": "no route"}})
-
-
-class TestInstagram(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.server = HTTPServer(("127.0.0.1", 0), MockGraphHandler)
-        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
-        time.sleep(0.2)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-
-    def publisher(self):
-        return instagram.InstagramPublisher("IGUSER", "TOKEN", api_base=self.base, dry_run=False)
-
-    def test_publish_flow_polls_until_finished(self):
-        MockGraphHandler.polls = 0
-        result = self.publisher().publish("https://cards.example.org/a.png", "caption")
-        self.assertEqual(result.media_id, "MEDIA456")
-        self.assertEqual(result.permalink, "https://www.instagram.com/p/ABC/")
-        self.assertGreaterEqual(MockGraphHandler.polls, 2)
-
-    def test_container_error_is_surfaced(self):
-        with self.assertRaises(instagram.InstagramError) as ctx:
-            self.publisher().create_container("", "caption")
-        self.assertIn("image_url required", str(ctx.exception))
-
-    def test_publishing_limit(self):
-        self.assertEqual(self.publisher().publishing_limit()["quota_usage"], 3)
-
-    def test_dry_run_makes_no_calls(self):
-        MockGraphHandler.polls = 0
-        dry = instagram.InstagramPublisher("", "", api_base=self.base, dry_run=True)
-        self.assertEqual(dry.publish("https://x/y.png", "c").media_id, "dry-run")
-        self.assertEqual(MockGraphHandler.polls, 0)
-
-    def test_live_requires_credentials(self):
-        with self.assertRaises(instagram.InstagramError):
-            instagram.InstagramPublisher("", "", dry_run=False)
-
-    def test_caption_structure(self):
-        caption = instagram.build_caption("Headline", "WTOP", "https://u", "navy_yard", ["#Ward6"])
+class TestCaptions(unittest.TestCase):
+    def test_instagram_caption_structure(self):
+        caption = captions.instagram_caption("Headline", "WTOP", "https://u", "navy_yard", ["#Ward6"])
         self.assertTrue(caption.startswith("Headline"))
         self.assertIn("Source: WTOP", caption)
         self.assertIn("#NavyYard", caption)
         self.assertIn("#Ward6", caption)
 
-    def test_caption_truncates_but_keeps_attribution(self):
-        caption = instagram.build_caption("Navy Yard " * 400, "WTOP", "https://u", "navy_yard")
-        self.assertLessEqual(len(caption), instagram.MAX_CAPTION)
+    def test_instagram_caption_truncates_but_keeps_attribution(self):
+        caption = captions.instagram_caption("Navy Yard " * 400, "WTOP", "https://u", "navy_yard")
+        self.assertLessEqual(len(caption), captions.IG_MAX_CAPTION)
         self.assertIn("Source: WTOP", caption)
         self.assertIn("#NavyYard", caption)
 
-    def test_caption_dedupes_hashtags(self):
-        caption = instagram.build_caption("H", "S", "", "navy_yard", ["#navyyard", "#NavyYard"])
-        tags = [t.lower() for t in caption.split() if t.startswith("#")]
-        self.assertEqual(tags.count("#navyyard"), 1, f"exact tag repeated: {tags}")
-        self.assertEqual(len(tags), len(set(tags)))
+    def test_hashtags_deduped_and_capped(self):
+        tags = captions.build_hashtags("navy_yard", ["#navyyard", "NavyYard", "#Ward6"])
+        self.assertEqual([t.lower() for t in tags].count("#navyyard"), 1)
+        self.assertIn("#Ward6", tags)
+        self.assertEqual(len(tags), len(set(t.lower() for t in tags)))
+
+    def test_bare_tag_gets_hash_prefix(self):
+        self.assertIn("#Ward6", captions.build_hashtags("dc", ["Ward6"]))
+
+    def test_citywide_gets_no_navy_yard_tags(self):
+        self.assertNotIn("#NavyYard", captions.build_hashtags("dc"))
+
+    def test_tiktok_post_fields(self):
+        post = captions.tiktok_post("A headline here", "The DC Line", "https://u", "navy_yard")
+        self.assertEqual(post["title"], "A headline here")
+        self.assertIn("Source: The DC Line", post["description"])
+        self.assertIn("#NavyYard", post["hashtags"])
+
+    def test_tiktok_title_truncated(self):
+        post = captions.tiktok_post("x" * 300, "S", tier="dc")
+        self.assertLessEqual(len(post["title"]), captions.TIKTOK_MAX_TITLE)
+        self.assertLessEqual(len(post["description"]), captions.TIKTOK_MAX_DESCRIPTION)
+
+
+class TestResults(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(os.path.join(self.tmp.name, "t.db"))
+        self.item = Item(source="A", title="t", url="https://example.org/a", tier="navy_yard")
+        self.store.add(self.item)
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_posted_result_marks_item_posted(self):
+        self.store.record_result(self.item.id, "instagram", "posted", permalink="https://ig/p/1")
+        row = self.store.get(self.item.id)
+        self.assertEqual(row["status"], "posted")
+        self.assertEqual(row["permalink"], "https://ig/p/1")
+
+    def test_failure_alone_marks_item_failed(self):
+        self.store.record_result(self.item.id, "tiktok", "failed", error="quota")
+        self.assertEqual(self.store.get(self.item.id)["status"], "failed")
+
+    def test_one_success_outweighs_one_failure(self):
+        self.store.record_result(self.item.id, "tiktok", "failed", error="quota")
+        self.store.record_result(self.item.id, "instagram", "posted", permalink="https://ig/p/2")
+        self.assertEqual(self.store.get(self.item.id)["status"], "posted")
+        self.assertEqual(len(self.store.results_for(self.item.id)), 2)
+
+    def test_result_is_upserted_per_target(self):
+        self.store.record_result(self.item.id, "instagram", "failed", error="rate limit")
+        self.store.record_result(self.item.id, "instagram", "posted", permalink="https://ig/p/3")
+        results = self.store.results_for(self.item.id)
+        self.assertEqual(len(results), 1, "re-reporting a target should update, not duplicate")
+        self.assertEqual(results[0]["status"], "posted")
+
+    def test_unknown_target_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.record_result(self.item.id, "myspace", "posted")
+
+    def test_export_window(self):
+        self.store.set_status(self.item.id, "exported", exported_at="2026-08-30T12:00:00+00:00")
+        self.assertEqual(self.store.exported_since("2026-08-30T00:00:00+00:00"), 1)
+        self.assertEqual(self.store.exported_since("2026-08-31T00:00:00+00:00"), 0)
+
+
+class TestManifest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(os.path.join(self.tmp.name, "t.db"))
+        self.item = Item(
+            source="WTOP", title="Half Street SE bar opens", url="https://example.org/a",
+            summary="Near Nationals Park.", tier="navy_yard", score=40,
+            published="2026-08-30T14:00:00+00:00",
+        )
+        self.store.add(self.item)
+        self.card = os.path.join(self.tmp.name, f"{self.item.id}.png")
+        with open(self.card, "wb") as fh:
+            fh.write(b"fake")
+        self.store.set_status(self.item.id, "approved", card_path=self.card)
+        self.cfg = {"export": {"hashtags": ["#Ward6"]}}
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_entry_carries_both_targets(self):
+        row = self.store.get(self.item.id)
+        entry = dcnews.build_manifest_entry(row, self.cfg, ["instagram", "tiktok"], "https://cards.example.org")
+        self.assertEqual(entry["id"], self.item.id)
+        self.assertEqual(entry["card"]["url"], f"https://cards.example.org/{self.item.id}.png")
+        self.assertEqual(entry["card"]["path"], self.card)
+        self.assertEqual((entry["card"]["width"], entry["card"]["height"]), render.CANVAS)
+        self.assertIn("caption", entry["targets"]["instagram"])
+        self.assertIn("title", entry["targets"]["tiktok"])
+        self.assertIn("#Ward6", entry["targets"]["instagram"]["caption"])
+
+    def test_target_selection_is_respected(self):
+        row = self.store.get(self.item.id)
+        entry = dcnews.build_manifest_entry(row, self.cfg, ["instagram"], "")
+        self.assertEqual(list(entry["targets"]), ["instagram"])
+        self.assertEqual(entry["card"]["url"], "", "no base URL means no card URL")
+
+    def test_config_rejects_unknown_target(self):
+        path = os.path.join(self.tmp.name, "c.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"feeds": [{"name": "f", "url": "https://f"}],
+                       "export": {"targets": ["instagram", "myspace"]}}, fh)
+        with self.assertRaises(ValueError):
+            dcnews.load_config(path)
 
 
 if __name__ == "__main__":
