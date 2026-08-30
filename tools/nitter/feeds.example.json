@@ -1,0 +1,29 @@
+{
+  "instances": [
+    "https://nitter.net",
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://xcancel.com"
+  ],
+  "request_timeout": 20.0,
+  "delay_between_requests": 2.0,
+  "max_seen_per_source": 500,
+  "sources": [
+    {
+      "name": "example-timeline",
+      "type": "user",
+      "handle": "nim_lang"
+    },
+    {
+      "name": "example-media-only",
+      "type": "user",
+      "handle": "nim_lang",
+      "media_only": true
+    },
+    {
+      "name": "example-search",
+      "type": "search",
+      "query": "\"most rewatched\" filter:videos"
+    }
+  ]
+}
