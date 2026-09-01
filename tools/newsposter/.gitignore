@@ -1,0 +1,5 @@
+# Local working config and run state — not checked in.
+feeds.json
+state.json
+state.json.tmp
+__pycache__/

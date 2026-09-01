@@ -1,0 +1,2 @@
+# No dependencies — newsposter.py is standard library only.
+# This file exists so Railway's Nixpacks builder detects a Python service.

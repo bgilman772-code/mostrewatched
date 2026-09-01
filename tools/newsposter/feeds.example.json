@@ -1,0 +1,31 @@
+{
+  "target": "stdout",
+  "template": "{title} {url}",
+  "max_posts_per_run": 5,
+  "delay_between_posts": 5.0,
+  "delay_between_requests": 2.0,
+  "request_timeout": 20.0,
+  "max_seen_per_source": 500,
+  "sources": [
+    {
+      "name": "verge-entertainment",
+      "type": "rss",
+      "url": "https://www.theverge.com/entertainment/rss/index.xml",
+      "template": "📺 {title} {url}"
+    },
+    {
+      "name": "example-search",
+      "type": "nitter",
+      "template": "{text} {url}",
+      "max_per_run": 2,
+      "nitter": {
+        "type": "search",
+        "query": "\"most rewatched\" filter:videos"
+      }
+    }
+  ],
+  "nitter_instances": [
+    "https://nitter.net",
+    "https://xcancel.com"
+  ]
+}
